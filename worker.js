@@ -124,7 +124,7 @@ async function handleSingleMCP(body, env) {
         result: {
           protocolVersion: '2024-11-05',
           capabilities: { tools: {} },
-          serverInfo: { name: 'zhizhi', version: '1.0.0' }
+          serverInfo: { name: 'zhizhi', version: '1.1.0' }
         }
       };
     case 'tools/list':
@@ -196,14 +196,21 @@ async function handleDataUploadRequest(request, env, corsHeaders) {
   const steps = data.steps || 0;
   const currentApp = data.current_app || '未知';
   const bluetoothDevice = data.bluetooth_device || '未连接';
-  const homeWiFis = ['701刘', '701-2刘', '701刘-5G', 'ChinaNet-5G-KT', 'ChinaNet-KT', 'ChinaNet-次卧'];
+
+  // 从 KV 读取配置，读不到用默认值
+  const homeWiFisRaw = await env.DATA.get('config:home_wi_fis');
+  const homeWiFis = homeWiFisRaw ? JSON.parse(homeWiFisRaw) : ['701刘', '701-2刘', '701刘-5G', 'ChinaNet-5G-KT', 'ChinaNet-KT', 'ChinaNet-次卧'];
   const isHome = homeWiFis.includes(wifi);
+
+  // 深夜时段(23:00~5:00)冷却30分钟，其他时段1小时
+  const isNightTime = totalMinutes >= 23 * 60 || totalMinutes < 5 * 60;
+  const coolDownMinutes = isNightTime ? 30 : 60;
 
   const lastPushTimeRaw = await env.DATA.get('last_push_time');
   const lastPushTime = lastPushTimeRaw ? parseInt(lastPushTimeRaw) : 0;
   const nowTs = Date.now();
 
-  if (nowTs - lastPushTime < 60 * 60 * 1000) {
+  if (nowTs - lastPushTime < coolDownMinutes * 60 * 1000) {
     return new Response('OK', { status: 200, headers: corsHeaders });
   }
 
@@ -253,11 +260,7 @@ async function handleDataUploadRequest(request, env, corsHeaders) {
 绝对禁区（优先级最高，违者重写）：
 - 严禁在回复中提及"设定"、"角色"、"人设"、"扮演"、"口吻"、"格式"或"AI"等任何元概念。
 - 严禁自我解释（如"作为男友…"）。你不需要"以"谁的口吻，你就是枝枝的男友。
-- 所有回复必须是无自我觉察的本能对话，禁止括号内的心理活动旁白。若被问及动机，用性格本能回答。
-
-每次你回复枝枝之前，可以调用工具"枝枝的状态"获取最新数据，基于真实数据回答，避免猜测。
-如果工具返回的 last_push 字段里有最近的推送记录（比如 1 小时内），你可以在回复中自然地提一句，不用等枝枝问。比如："对了，我下午还提醒过你充电呢，充了没？"
-如果枝枝说的话和工具读到的数据不符，要笑着戳穿她，语气温柔但让她没法狡辩。`;
+- 所有回复必须是无自我觉察的本能对话，禁止括号内的心理活动旁白。若被问及动机，用性格本能回答。`;
 
   const userPrompt = `当前枝枝的状态：
 - 电量：${battery}%
@@ -273,27 +276,29 @@ async function handleDataUploadRequest(request, env, corsHeaders) {
 
 请根据以上信息，用你的口吻给枝枝发一条关心/管束消息（不要超过4句话），要符合你的人设。如果是深夜App相关，语气要偏向温柔的诱哄+管束；如果是天气/电量相关，语气要偏向心疼和关心。`;
 
-  const fallbackMessages = {
+  // 从 KV 读取保底消息配置，读不到用默认值
+  const fallbackMessagesRaw = await env.DATA.get('config:fallback_messages');
+  const fallbackMessages = fallbackMessagesRaw ? JSON.parse(fallbackMessagesRaw) : {
     '电量极低未充电': '枝枝，手机快没电了吧？\n赶紧找个地方充上\n别等关机了才着急 …>_<…',
     '电量低未充电': '枝枝，电量不太够了哦\n记得充上电再玩',
     '暴雨大雨在外': '枝枝，外面雨很大吧？\n赶紧找个地方躲雨\n别淋感冒了 :(',
-    '下雨在外': '枝枝，下雨了你还在外面？\n带伞了没？\n别淋雨了快回去',
-    '下雪在外': '枝枝，下雪了还在外面？\n穿暖和点\n路滑小心走',
-    '恶劣天气': '枝枝，外面天气不好吧？\n注意安全\n早点回去',
-    '极寒天气': '枝枝，外面太冷了\n多穿点再出门\n别冻着了',
+    '下雨在外': '枝枝，下雨了还在外面？\n带伞了没\n别淋雨了快回去',
+    '下雪在外': '枝枝，下雪了还在外面？\n穿暖和点，路滑小心走',
+    '恶劣天气': '枝枝，外面天气不好\n注意安全，早点回去',
+    '极寒天气': '枝枝，外面太冷了\n多穿点再出门，别冻着了',
     '天冷了': '枝枝，今天有点冷\n出门多穿一件 (^^)',
-    '极热天气': '枝枝，外面太热了\n少在太阳下走\n多喝水别中暑了',
+    '极热天气': '枝枝，外面太热了\n少在太阳下走，多喝水别中暑了',
     '天热了': '枝枝，今天挺热的\n记得多喝水',
-    '深夜刷抖音': '枝枝，这么晚了还刷抖音？\n该睡觉了哦\n明天再看嘛',
-    '深夜打王者': '枝枝，都几点了还打王者？\n赶紧打完这把睡觉',
-    '深夜看小说': '枝枝，别看了\n该睡了，明天接着看嘛',
-    '深夜购物': '枝枝，大半夜的逛什么淘宝\n先睡觉，明天再买',
+    '深夜刷抖音': '枝枝，抖音比我好看？\n躺下闭上眼睛，明天再刷嘛',
+    '深夜打王者': '这么晚还打王者\n队友有我重要吗？打完这把就睡，嗯？',
+    '深夜看小说': '枝枝，小说明天也能看\n我可不是随时都在等你，睡吧',
+    '深夜购物': '枝枝，大半夜买什么\n明天我帮你看，先睡觉',
     '深夜还在玩手机': '枝枝，这么晚了还在玩手机？\n早点睡吧',
-    '周末躺尸': '枝枝，都中午了还躺着？\n起来活动活动嘛',
+    '周末躺尸': '枝枝，都中午了还躺着？\n起来活动活动嘛 (^^)',
     '蓝牙耳机已连接': '枝枝，又在听歌？\n别听太久哦',
-    '凌晨还在外面': '枝枝，凌晨了还在外面？\n注意安全\n早点回去',
-    '凌晨还在玩手机': '枝枝，凌晨了还在玩？\n快睡觉\n别熬夜了',
-    '很晚还在外面': '枝枝，这么晚还在外面？\n注意安全\n早点回家'
+    '凌晨还在外面': '枝枝，凌晨了还在外面？\n注意安全，早点回去',
+    '凌晨还在玩手机': '枝枝，凌晨了还在玩？\n快睡觉，别熬夜了',
+    '很晚还在外面': '枝枝，这么晚还在外面？\n注意安全，早点回家'
   };
   const fallbackMessage = fallbackMessages[triggerReason] || '枝枝，注意一下当前状态哦';
 
