@@ -116,7 +116,7 @@ async function handleDataUploadRequest(request, env, corsHeaders) {
   const weather = data.weather || '';
   const temperature = data.temperature ?? 25;
   const location = data.location || '';
-  // ★★★ 修复：上报字段名是 wifi_name，不是 wifi_ssid ★★★
+  // ★ 上报字段名是 wifi_name
   const wifi = data.wifi_name || '';
   const steps = data.steps || 0;
   const currentApp = data.current_app || '未知';
@@ -139,8 +139,8 @@ async function handleDataUploadRequest(request, env, corsHeaders) {
   console.log(`[上报] WiFi=${wifi}, isHome=${isHome}, 时间=${hour}:${minute}`);
 
   // ---------- 冷却时间 ----------
-  const isNightTime = totalMinutes >= 23 * 60 || totalMinutes < 5 * 60;
-  const coolDownMinutes = isNightTime ? 30 : 60;
+  // TODO: 测试完改回 isNightTime ? 30 : 60
+  const coolDownMinutes = 1;
   const lastPushTimeRaw = await env.DATA.get('last_push_time');
   const lastPushTime = lastPushTimeRaw ? parseInt(lastPushTimeRaw) : 0;
   const nowTs = Date.now();
@@ -204,7 +204,7 @@ async function handleDataUploadRequest(request, env, corsHeaders) {
 - 连接的蓝牙设备：${bluetoothDevice}
 - 触发关心的事件：${triggerReason}
 
-请根据以上信息给枝枝发一条关心/管束消息，不要超过4句话。深夜App相关要温柔诱哄+管束，天气/电量相关要心疼和关心。`;
+根据以上信息，用你的口吻给枝枝发一条关心/管束消息，不超过4句话。深夜App用温柔诱哄的语气，天气电量用心疼关心的语气。`;
 
   // ---------- 保底消息 ----------
   const fallbackMessages = {
