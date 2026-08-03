@@ -139,8 +139,8 @@ async function handleDataUploadRequest(request, env, corsHeaders) {
   console.log(`[上报] WiFi=${wifi}, isHome=${isHome}, 时间=${hour}:${minute}`);
 
   // ---------- 冷却时间 ----------
-  // TODO: 测试完改回 isNightTime ? 30 : 60
-  const coolDownMinutes = 1;
+  const isNightTime = totalMinutes >= 23 * 60 || totalMinutes < 5 * 60;
+  const coolDownMinutes = isNightTime ? 30 : 60;
   const lastPushTimeRaw = await env.DATA.get('last_push_time');
   const lastPushTime = lastPushTimeRaw ? parseInt(lastPushTimeRaw) : 0;
   const nowTs = Date.now();
