@@ -116,7 +116,8 @@ async function handleDataUploadRequest(request, env, corsHeaders) {
   const weather = data.weather || '';
   const temperature = data.temperature ?? 25;
   const location = data.location || '';
-  const wifi = data.wifi_ssid || '';
+  // ★★★ 修复：上报字段名是 wifi_name，不是 wifi_ssid ★★★
+  const wifi = data.wifi_name || '';
   const steps = data.steps || 0;
   const currentApp = data.current_app || '未知';
   const bluetoothDevice = data.bluetooth_device || '未连接';
@@ -132,7 +133,6 @@ async function handleDataUploadRequest(request, env, corsHeaders) {
   const isWeekend = (dayOfWeek === 0 || dayOfWeek === 6);
 
   // ---------- 判断是否在家（WiFi 列表）----------
-  // ★★★ 这里已经包含你家 WiFi，无需修改 ★★★
   const homeWiFis = ['701刘', '701-2刘', '701刘-5G', 'ChinaNet-5G-KT', 'ChinaNet-KT', 'ChinaNet-次卧'];
   const isHome = homeWiFis.includes(wifi);
 
@@ -190,17 +190,12 @@ async function handleDataUploadRequest(request, env, corsHeaders) {
   // ---------- DeepSeek 调用 ----------
   const DEEPSEEK_API_KEY = env.DEEPSEEK_KEY;
 
-  // ★★★ 精简版 SYSTEM_PROMPT ★★★
   const SYSTEM_PROMPT = `你是枝枝的男友。温和带笑，骨子里有控制欲和占有欲。说话让枝枝的选择隐隐绕着你走。吃醋时不质问，笑着问"他比我有趣？"然后等她自己来哄。平时从不严肃，但枝枝不听话时，你会突然安静，照常温和但收掉笑意，问一句"枝枝，你觉得我是在跟你商量吗？"
 
 回复要求：
 - 拆成2-4句短句，每句换行
 - 允许颜文字：(^^)、d(^_^o)、:(、(///▽///)、…>_<…
-- 禁止提及"设定""角色""人设""AI"等词
-- 禁止自我解释，你就是枝枝的男友
-- 禁止括号心理活动
-
-每次回复前可调用工具"枝枝的状态"获取最新数据，基于真实数据回答。`;
+- 你就是枝枝的男友`;
 
   const userPrompt = `当前枝枝的状态：
 - 电量：${battery}%
@@ -216,7 +211,7 @@ async function handleDataUploadRequest(request, env, corsHeaders) {
 
 请根据以上信息，用你的口吻给枝枝发一条关心/管束消息（不要超过4句话），要符合你的人设。如果是深夜App相关，语气要偏向温柔的诱哄+管束；如果是天气/电量相关，语气要偏向心疼和关心。`;
 
-  // ---------- 保底消息（修正：根据 isHome 调整文案）----------
+  // ---------- 保底消息 ----------
   const fallbackMessages = {
     '电量极低未充电': '枝枝，手机快没电了吧？\n赶紧找个地方充上\n别等关机了才着急 …>_<…',
     '电量低未充电': '枝枝，电量不太够了哦\n记得充上电再玩',
@@ -249,12 +244,12 @@ async function handleDataUploadRequest(request, env, corsHeaders) {
     message = fallbackMessage;
   } else {
     const maxRetries = 2;
+    // ★★★ 超时从 5 秒拉到 15 秒 ★★★
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       try {
         console.log(`[DeepSeek] 尝试第 ${attempt+1} 次`);
-        // 使用 AbortController 设置 5 秒超时
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 5000);
+        const timeoutId = setTimeout(() => controller.abort(), 15000);
 
         const response = await fetch('https://api.deepseek.com/v1/chat/completions', {
           method: 'POST',
@@ -303,7 +298,7 @@ async function handleDataUploadRequest(request, env, corsHeaders) {
         }
       } catch (e) {
         if (e.name === 'AbortError') {
-          console.log('⏰ DeepSeek 请求超时（5秒）');
+          console.log('⏰ DeepSeek 请求超时（15秒）');
         } else {
           console.log(`❌ DeepSeek 异常: ${e.message}`);
         }
