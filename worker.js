@@ -124,7 +124,7 @@ async function handleSingleMCP(body, env) {
         result: {
           protocolVersion: '2024-11-05',
           capabilities: { tools: {} },
-          serverInfo: { name: 'zhizhi', version: '1.1.0' }
+          serverInfo: { name: 'zhizhi', version: '1.2.0' }
         }
       };
     case 'tools/list':
@@ -185,11 +185,15 @@ async function handleDataUploadRequest(request, env, corsHeaders) {
   const isCharging = data.is_charging || false;
   const weather = data.weather || '';
   const temperature = data.temperature ?? 25;
+
+  // Cloudflare Worker 默认时区是 UTC，需要 +8 转北京时间
   const now = new Date();
-  const hour = now.getHours();
-  const minute = now.getMinutes();
+  const bjOffset = 8 * 60 * 60 * 1000;
+  const bjNow = new Date(now.getTime() + bjOffset);
+  const hour = bjNow.getUTCHours();
+  const minute = bjNow.getUTCMinutes();
   const totalMinutes = hour * 60 + minute;
-  const dayOfWeek = now.getDay();
+  const dayOfWeek = bjNow.getUTCDay();
   const isWeekend = (dayOfWeek === 0 || dayOfWeek === 6);
   const location = data.location || '';
   const wifi = data.wifi_ssid || '';
@@ -197,12 +201,10 @@ async function handleDataUploadRequest(request, env, corsHeaders) {
   const currentApp = data.current_app || '未知';
   const bluetoothDevice = data.bluetooth_device || '未连接';
 
-  // 从 KV 读取配置，读不到用默认值
   const homeWiFisRaw = await env.DATA.get('config:home_wi_fis');
   const homeWiFis = homeWiFisRaw ? JSON.parse(homeWiFisRaw) : ['701刘', '701-2刘', '701刘-5G', 'ChinaNet-5G-KT', 'ChinaNet-KT', 'ChinaNet-次卧'];
   const isHome = homeWiFis.includes(wifi);
 
-  // 深夜时段(23:00~5:00)冷却30分钟，其他时段1小时
   const isNightTime = totalMinutes >= 23 * 60 || totalMinutes < 5 * 60;
   const coolDownMinutes = isNightTime ? 30 : 60;
 
@@ -276,7 +278,6 @@ async function handleDataUploadRequest(request, env, corsHeaders) {
 
 请根据以上信息，用你的口吻给枝枝发一条关心/管束消息（不要超过4句话），要符合你的人设。如果是深夜App相关，语气要偏向温柔的诱哄+管束；如果是天气/电量相关，语气要偏向心疼和关心。`;
 
-  // 从 KV 读取保底消息配置，读不到用默认值
   const fallbackMessagesRaw = await env.DATA.get('config:fallback_messages');
   const fallbackMessages = fallbackMessagesRaw ? JSON.parse(fallbackMessagesRaw) : {
     '电量极低未充电': '枝枝，手机快没电了吧？\n赶紧找个地方充上\n别等关机了才着急 …>_<…',
