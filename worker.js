@@ -65,7 +65,7 @@ export default {
     }
 
     if (request.method === 'POST') {
-      if (url.pathname === '/mcp') {
+      if (url.pathname.startsWith('/mcp')) {
         return handleMCPRequest(request, env, corsHeaders);
       } else {
         return handleDataUploadRequest(request, env, corsHeaders);
@@ -124,7 +124,7 @@ async function handleSingleMCP(body, env) {
         result: {
           protocolVersion: '2024-11-05',
           capabilities: { tools: {} },
-          serverInfo: { name: 'zhizhi', version: '1.2.0' }
+          serverInfo: { name: 'zhizhi', version: '1.2.1' }
         }
       };
     case 'tools/list':
