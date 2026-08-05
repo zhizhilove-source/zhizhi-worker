@@ -1,6 +1,6 @@
 // ============================================================
 // 沉浸式男友 Worker（含记忆、决策、闹钟、MCP 升级）
-// 版本 2.0.1
+// 版本 2.0.2
 // ============================================================
 
 export default {
@@ -83,6 +83,20 @@ function getBeijingTime() {
 }
 
 // ============================================================
+// 添加提醒（MCP 和 /add 共用）
+// ============================================================
+async function addReminder(env, time, text) {
+  const id = crypto.randomUUID();
+  const reminder = { id, time, text, created_at: new Date().toISOString() };
+  let reminders = [];
+  const raw = await env.DATA.get('reminders');
+  if (raw) { try { reminders = JSON.parse(raw); } catch {} }
+  reminders.push(reminder);
+  await env.DATA.put('reminders', JSON.stringify(reminders));
+  return { id, time, text };
+}
+
+// ============================================================
 // MCP 处理（Kelivo 专用）
 // ============================================================
 async function handleMCPRequest(request, env, corsHeaders) {
@@ -96,11 +110,16 @@ async function handleMCPRequest(request, env, corsHeaders) {
     const params = item.params;
     switch (method) {
       case 'initialize':
-        return { jsonrpc: '2.0', id, result: { protocolVersion: '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'zhizhi', version: '2.0.1' } } };
+        return { jsonrpc: '2.0', id, result: { protocolVersion: '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'zhizhi', version: '2.0.2' } } };
       case 'tools/list':
-        return { jsonrpc: '2.0', id, result: { tools: [{ name: 'zhizhi_status', description: '获取枝枝的最新状态、历史记录和推送日志', inputSchema: { type: 'object', properties: {}, additionalProperties: false } }] } };
+        return { jsonrpc: '2.0', id, result: { tools: [
+          { name: 'zhizhi_status', description: '获取枝枝的最新状态、历史记录和推送日志', inputSchema: { type: 'object', properties: {}, additionalProperties: false } },
+          { name: 'add_reminder', description: '给枝枝定一个闹钟提醒，到点通过Bark推送。参数time为"HH:MM"24小时制，text为提醒内容。', inputSchema: { type: 'object', properties: { time: { type: 'string', description: '闹钟时间，HH:MM 24小时制，如 09:00' }, text: { type: 'string', description: '提醒内容，如 起床啦' } }, required: ['time', 'text'] } }
+        ] } };
       case 'tools/call': {
-        if (params?.name === 'zhizhi_status') {
+        const toolName = params?.name;
+        const args = params?.arguments || {};
+        if (toolName === 'zhizhi_status') {
           // 获取最新状态
           const latestRaw = await env.DATA.get('latest');
           const lastPushRaw = await env.DATA.get('last_push');
@@ -123,8 +142,19 @@ async function handleMCPRequest(request, env, corsHeaders) {
             push_logs: pushLogs.slice(-10) // 最近10条
           };
           return { jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: JSON.stringify(data) }] } };
+        } else if (toolName === 'add_reminder') {
+          const { time, text } = args;
+          if (!time || !text) {
+            return { jsonrpc: '2.0', id, error: { code: -32602, message: '缺少 time 或 text 参数' } };
+          }
+          // 写入提醒
+          await addReminder(env, time, text);
+          // Bark 回执
+          const replyMsg = `⏰ 已定闹钟：${text}（${time}）`;
+          await fetch('https://api.day.app/Fn73bpSuSpBrCz3iJnCmXF/' + encodeURIComponent(replyMsg) + '?sound=bell');
+          return { jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: JSON.stringify({ success: true, time, text }) }] } };
         }
-        return { jsonrpc: '2.0', id, error: { code: -32602, message: 'Unknown tool: ' + params?.name } };
+        return { jsonrpc: '2.0', id, error: { code: -32602, message: 'Unknown tool: ' + toolName } };
       }
       case 'ping':
         return { jsonrpc: '2.0', id, result: {} };
@@ -147,7 +177,7 @@ async function handleMCPRequest(request, env, corsHeaders) {
 }
 
 // ============================================================
-// 处理 /add 接口（定闹钟）
+// 处理 /add 接口（定闹钟，保留作为备用）
 // ============================================================
 async function handleAddReminder(request, env, corsHeaders) {
   let body;
@@ -158,25 +188,14 @@ async function handleAddReminder(request, env, corsHeaders) {
     return new Response(JSON.stringify({ error: '缺少 time 或 text 字段' }), { status: 400, headers: { 'Content-Type': 'application/json', ...corsHeaders } });
   }
 
-  // 生成唯一 ID
-  const id = crypto.randomUUID();
-  const reminder = { id, time, text, created_at: new Date().toISOString() };
-
-  // 读取现有提醒列表
-  let reminders = [];
-  const raw = await env.DATA.get('reminders');
-  if (raw) {
-    try { reminders = JSON.parse(raw); } catch {}
-  }
-  reminders.push(reminder);
-  await env.DATA.put('reminders', JSON.stringify(reminders));
+  await addReminder(env, time, text);
 
   // 立即推送回执（告知已定闹钟）
   const BARK_URL = 'https://api.day.app/Fn73bpSuSpBrCz3iJnCmXF/';
   const replyMsg = `⏰ 已定闹钟：${text}（${time}）`;
   await fetch(BARK_URL + encodeURIComponent(replyMsg) + '?sound=bell');
 
-  return new Response(JSON.stringify({ success: true, id }), {
+  return new Response(JSON.stringify({ success: true, time, text }), {
     status: 200,
     headers: { 'Content-Type': 'application/json', ...corsHeaders }
   });
@@ -283,7 +302,6 @@ async function handleDataUploadRequest(request, env, corsHeaders) {
   // ---------- 7. 弹性冷却 ----------
   const lastPushTimeRaw = await env.DATA.get('last_push_time');
   const lastPushTime = lastPushTimeRaw ? parseInt(lastPushTimeRaw) : 0;
-  let coolDownMinutes = 60; // 默认
 
   // 先判断紧急程度（后面会覆盖）
   let urgencyLevel = 'normal';
