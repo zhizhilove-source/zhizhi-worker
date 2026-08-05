@@ -1,6 +1,6 @@
 // ============================================================
 // 沉浸式男友 Worker（含记忆、决策、闹钟、MCP 升级）
-// 版本 2.0.2
+// 版本 2.0.3
 // ============================================================
 
 export default {
@@ -110,7 +110,7 @@ async function handleMCPRequest(request, env, corsHeaders) {
     const params = item.params;
     switch (method) {
       case 'initialize':
-        return { jsonrpc: '2.0', id, result: { protocolVersion: '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'zhizhi', version: '2.0.2' } } };
+        return { jsonrpc: '2.0', id, result: { protocolVersion: '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'zhizhi', version: '2.0.3' } } };
       case 'tools/list':
         return { jsonrpc: '2.0', id, result: { tools: [
           { name: 'zhizhi_status', description: '获取枝枝的最新状态、历史记录和推送日志', inputSchema: { type: 'object', properties: {}, additionalProperties: false } },
@@ -298,6 +298,16 @@ async function handleDataUploadRequest(request, env, corsHeaders) {
     try { history = JSON.parse(histRaw); } catch {}
   }
   const last3 = history.slice(-3); // 最近3条（不包括当前这条）
+
+  // ============================================================
+  // ⭐【新增】Kelivo 特判：如果在和男友聊天，跳过所有推送
+  // 放在状态历史之后、三层决策之前，保证历史照常记录
+  // ============================================================
+  const isKelivo = currentApp.includes('Kelivo') || currentApp.includes('kelivo');
+  if (isKelivo) {
+    console.log(`[Kelivo特判] 当前App是 ${currentApp}，跳过推送，保持对话沉浸`);
+    return new Response('OK', { status: 200, headers: corsHeaders });
+  }
 
   // ---------- 7. 弹性冷却 ----------
   const lastPushTimeRaw = await env.DATA.get('last_push_time');
