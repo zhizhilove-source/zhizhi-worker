@@ -1,6 +1,6 @@
 // ============================================================
 // 沉浸式男友 Worker（记忆、决策、闹钟、时长、成就、远程切屏、自动锁屏）
-// 版本 2.3.1
+// 版本 2.3.2
 // ============================================================
 import nodemailer from 'nodemailer';
 
@@ -70,6 +70,10 @@ const SAFE_APPS = ['相机', '电话', '地图', '支付', '微信', '支付宝'
 const IPHONE_CMDS = ['回来', '睡觉', '呼叫', '测试'];
 // 家的 WiFi 关键词（子串匹配，名字稍有变化也能识别）
 const HOME_WIFI_KEYWORDS = ['701刘', '701-2刘', 'ChinaNet-5G-KT', 'ChinaNet-KT', 'ChinaNet-次卧'];
+// 家的坐标（经纬度，半径内算在家）枝枝2026-08-06提供
+const HOME_LAT = 28.5196180122691;
+const HOME_LON = 115.9457367227269;
+const HOME_RADIUS_M = 500;
 
 // ============================================================
 // 远程切屏：SMTP 发命令到 iPhone
@@ -183,6 +187,14 @@ function randomFromPool(pool) {
 // 每日计数重置（按天拼 key）
 function dailyKey(prefix, deviceId) {
   return `${prefix}_${deviceId}_${getTodayStr()}`;
+}
+// 两点经纬度距离（米）
+function distMeters(lat1, lon1, lat2, lon2) {
+  const R = 6371000;
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLon = (lon2 - lon1) * Math.PI / 180;
+  const a = Math.sin(dLat / 2) ** 2 + Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLon / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(a));
 }
 
 async function addReminder(env, time, text) {
@@ -361,7 +373,7 @@ async function handleMCPRequest(request, env, corsHeaders) {
     const params = item.params;
     switch (method) {
       case 'initialize':
-        return { jsonrpc: '2.0', id, result: { protocolVersion: '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'zhizhi', version: '2.3.1' } } };
+        return { jsonrpc: '2.0', id, result: { protocolVersion: '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'zhizhi', version: '2.3.2' } } };
       case 'tools/list':
         return { jsonrpc: '2.0', id, result: { tools: [
           { name: 'zhizhi_status', description: '获取枝枝的最新状态、历史记录和推送日志', inputSchema: { type: 'object', properties: {}, additionalProperties: false } },
@@ -561,8 +573,15 @@ async function handleDataUploadRequest(request, env, corsHeaders) {
   if (histRaw) { try { history = JSON.parse(histRaw); } catch {} }
   const last3 = history.slice(-3);
   const prevIsHome = last3.length ? last3[last3.length - 1].isHome : true;
+
+  // 家的判断优先级：GPS经纬度 > WiFi子串 > 沿用上次状态
+  const dataLat = parseFloat(data.latitude);
+  const dataLon = parseFloat(data.longitude);
+  const gpsValid = !isNaN(dataLat) && !isNaN(dataLon);
   const wifiValid = !!wifi;
-  const isHome = wifiValid ? HOME_WIFI_KEYWORDS.some(k => wifi.includes(k)) : prevIsHome;
+  const gpsHome = gpsValid ? (distMeters(dataLat, dataLon, HOME_LAT, HOME_LON) <= HOME_RADIUS_M) : null;
+  const isHome = gpsValid ? gpsHome : (wifiValid ? HOME_WIFI_KEYWORDS.some(k => wifi.includes(k)) : prevIsHome);
+  const reliableLocation = gpsValid || wifiValid;
 
   const nowTs = Date.now();
   const lastRecordRaw = await env.DATA.get('last_record_time');
@@ -594,7 +613,7 @@ async function handleDataUploadRequest(request, env, corsHeaders) {
 
   if (last3.length > 0) {
     const prev = last3[last3.length - 1];
-    if (prev.isHome === true && isHome === false && wifiValid) { shouldPush = true; triggerReason = `突然出门，天气：${weather}`; urgencyLevel = 'high'; skipCooldown = true; }
+    if (prev.isHome === true && isHome === false && reliableLocation) { shouldPush = true; triggerReason = `突然出门，天气：${weather}`; urgencyLevel = 'high'; skipCooldown = true; }
     else if (prev.isCharging === true && isCharging === false && battery < 80) { shouldPush = true; triggerReason = `拔充电器，当前电量${battery}%`; urgencyLevel = (battery < 30) ? 'high' : 'normal'; if (urgencyLevel === 'high') skipCooldown = true; }
   }
 
@@ -622,10 +641,10 @@ async function handleDataUploadRequest(request, env, corsHeaders) {
     else if (temperature < 10) { shouldPush = true; triggerReason = '天冷了'; urgencyLevel = 'normal'; }
     else if (temperature > 38) { shouldPush = true; triggerReason = '极热天气'; urgencyLevel = 'high'; skipCooldown = true; }
     else if (temperature > 32) { shouldPush = true; triggerReason = '天热了'; urgencyLevel = 'normal'; }
-    else if (hour >= 1 && totalMinutes < 6 * 60 && !isHome && wifiValid) { shouldPush = true; triggerReason = '凌晨还在外面'; urgencyLevel = 'high'; skipCooldown = true; }
+    else if (hour >= 1 && totalMinutes < 6 * 60 && !isHome && reliableLocation) { shouldPush = true; triggerReason = '凌晨还在外面'; urgencyLevel = 'high'; skipCooldown = true; }
     else if (hour >= 0 && totalMinutes < 5 * 60 && currentApp !== '未知' && currentApp !== '') { shouldPush = true; triggerReason = '凌晨还在玩手机'; urgencyLevel = 'normal'; }
     else if (bluetoothDevice.includes('koomzeK9+')) { shouldPush = true; triggerReason = '蓝牙耳机已连接'; urgencyLevel = 'low'; }
-    else if (!isHome && hour >= 22 && totalMinutes < 24 * 60 && wifiValid) { shouldPush = true; triggerReason = '很晚还在外面'; urgencyLevel = 'normal'; }
+    else if (!isHome && hour >= 22 && totalMinutes < 24 * 60 && reliableLocation) { shouldPush = true; triggerReason = '很晚还在外面'; urgencyLevel = 'normal'; }
   }
 
   if (shouldPush && !skipCooldown) {
