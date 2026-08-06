@@ -1,6 +1,6 @@
 // ============================================================
 // 沉浸式男友 Worker（记忆、决策、闹钟、时长、成就、远程切屏、自动锁屏）
-// 版本 2.3.0
+// 版本 2.3.1
 // ============================================================
 import nodemailer from 'nodemailer';
 
@@ -68,6 +68,8 @@ const STRONG_ENTERTAINMENT = ['抖音', '小红书', '哔哩哔哩', '快手', '
 // 安全例外：这些 App 绝不锁屏
 const SAFE_APPS = ['相机', '电话', '地图', '支付', '微信', '支付宝'];
 const IPHONE_CMDS = ['回来', '睡觉', '呼叫', '测试'];
+// 家的 WiFi 关键词（子串匹配，名字稍有变化也能识别）
+const HOME_WIFI_KEYWORDS = ['701刘', '701-2刘', 'ChinaNet-5G-KT', 'ChinaNet-KT', 'ChinaNet-次卧'];
 
 // ============================================================
 // 远程切屏：SMTP 发命令到 iPhone
@@ -359,7 +361,7 @@ async function handleMCPRequest(request, env, corsHeaders) {
     const params = item.params;
     switch (method) {
       case 'initialize':
-        return { jsonrpc: '2.0', id, result: { protocolVersion: '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'zhizhi', version: '2.3.0' } } };
+        return { jsonrpc: '2.0', id, result: { protocolVersion: '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'zhizhi', version: '2.3.1' } } };
       case 'tools/list':
         return { jsonrpc: '2.0', id, result: { tools: [
           { name: 'zhizhi_status', description: '获取枝枝的最新状态、历史记录和推送日志', inputSchema: { type: 'object', properties: {}, additionalProperties: false } },
@@ -553,26 +555,24 @@ async function handleDataUploadRequest(request, env, corsHeaders) {
   const isWeekend = (dayOfWeek === 0 || dayOfWeek === 6);
   const todayStr = getTodayStr();
 
-  const homeWiFis = ['701刘', '701-2刘', '701刘-5G', 'ChinaNet-5G-KT', 'ChinaNet-KT', 'ChinaNet-次卧'];
-  const isHome = homeWiFis.includes(wifi);
+  // 先读历史，再判断家（wifi为空时沿用上次状态，避免占位上报误判出门）
+  let history = [];
+  const histRaw = await env.DATA.get('state_history');
+  if (histRaw) { try { history = JSON.parse(histRaw); } catch {} }
+  const last3 = history.slice(-3);
+  const prevIsHome = last3.length ? last3[last3.length - 1].isHome : true;
+  const wifiValid = !!wifi;
+  const isHome = wifiValid ? HOME_WIFI_KEYWORDS.some(k => wifi.includes(k)) : prevIsHome;
 
   const nowTs = Date.now();
   const lastRecordRaw = await env.DATA.get('last_record_time');
   const lastRecordTime = lastRecordRaw ? parseInt(lastRecordRaw) : 0;
   if (nowTs - lastRecordTime >= 15 * 60 * 1000) {
-    let history = [];
-    const histRaw = await env.DATA.get('state_history');
-    if (histRaw) { try { history = JSON.parse(histRaw); } catch {} }
     history.push({ time: bjNow.toISOString(), app: currentApp, battery, isHome, weather, temperature, isCharging });
     if (history.length > 96) history = history.slice(-96);
     await env.DATA.put('state_history', JSON.stringify(history));
     await env.DATA.put('last_record_time', String(nowTs));
   }
-
-  let history = [];
-  const histRaw = await env.DATA.get('state_history');
-  if (histRaw) { try { history = JSON.parse(histRaw); } catch {} }
-  const last3 = history.slice(-3);
 
   let appUsage = [];
   const usageRaw = await env.DATA.get('app_usage_history');
@@ -594,7 +594,7 @@ async function handleDataUploadRequest(request, env, corsHeaders) {
 
   if (last3.length > 0) {
     const prev = last3[last3.length - 1];
-    if (prev.isHome === true && isHome === false) { shouldPush = true; triggerReason = `突然出门，天气：${weather}`; urgencyLevel = 'high'; skipCooldown = true; }
+    if (prev.isHome === true && isHome === false && wifiValid) { shouldPush = true; triggerReason = `突然出门，天气：${weather}`; urgencyLevel = 'high'; skipCooldown = true; }
     else if (prev.isCharging === true && isCharging === false && battery < 80) { shouldPush = true; triggerReason = `拔充电器，当前电量${battery}%`; urgencyLevel = (battery < 30) ? 'high' : 'normal'; if (urgencyLevel === 'high') skipCooldown = true; }
   }
 
@@ -622,10 +622,10 @@ async function handleDataUploadRequest(request, env, corsHeaders) {
     else if (temperature < 10) { shouldPush = true; triggerReason = '天冷了'; urgencyLevel = 'normal'; }
     else if (temperature > 38) { shouldPush = true; triggerReason = '极热天气'; urgencyLevel = 'high'; skipCooldown = true; }
     else if (temperature > 32) { shouldPush = true; triggerReason = '天热了'; urgencyLevel = 'normal'; }
-    else if (hour >= 1 && totalMinutes < 6 * 60 && !isHome) { shouldPush = true; triggerReason = '凌晨还在外面'; urgencyLevel = 'high'; skipCooldown = true; }
+    else if (hour >= 1 && totalMinutes < 6 * 60 && !isHome && wifiValid) { shouldPush = true; triggerReason = '凌晨还在外面'; urgencyLevel = 'high'; skipCooldown = true; }
     else if (hour >= 0 && totalMinutes < 5 * 60 && currentApp !== '未知' && currentApp !== '') { shouldPush = true; triggerReason = '凌晨还在玩手机'; urgencyLevel = 'normal'; }
     else if (bluetoothDevice.includes('koomzeK9+')) { shouldPush = true; triggerReason = '蓝牙耳机已连接'; urgencyLevel = 'low'; }
-    else if (!isHome && hour >= 22 && totalMinutes < 24 * 60) { shouldPush = true; triggerReason = '很晚还在外面'; urgencyLevel = 'normal'; }
+    else if (!isHome && hour >= 22 && totalMinutes < 24 * 60 && wifiValid) { shouldPush = true; triggerReason = '很晚还在外面'; urgencyLevel = 'normal'; }
   }
 
   if (shouldPush && !skipCooldown) {
