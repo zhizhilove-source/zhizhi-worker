@@ -80,7 +80,7 @@ const HOME_RADIUS_M = 500;
 async function sendIphoneCommand(env, cmd) {
   if (!IPHONE_CMDS.includes(cmd)) return '命令必须是：回来 / 睡觉 / 呼叫 / 测试';
   const RESEND_KEY = env.RESEND_API_KEY || '';
-  const FROM = env.MAIL_FROM || '命令@zhizhilove.cn';
+  const FROM = env.MAIL_FROM || 'cmd@zhizhilove.cn';
   const TO = env.MAIL_TO || env.SMTP_RECIPIENT || '';
   if (!RESEND_KEY) return 'Resend未配置：请在Worker环境变量设置 RESEND_API_KEY';
   if (!TO) return '未配置收件邮箱：请设置 MAIL_TO';
