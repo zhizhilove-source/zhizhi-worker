@@ -1,8 +1,7 @@
 // ============================================================
 // 沉浸式男友 Worker（记忆、决策、闹钟、时长、成就、远程切屏、自动锁屏）
-// 版本 2.3.2
+// 版本 2.3.3
 // ============================================================
-import nodemailer from 'nodemailer';
 
 export default {
   async fetch(request, env) {
@@ -76,19 +75,22 @@ const HOME_LON = 115.9457367227269;
 const HOME_RADIUS_M = 500;
 
 // ============================================================
-// 远程切屏：SMTP 发命令到 iPhone
+// 远程切屏：通过 Resend HTTP API 发命令到 iPhone
 // ============================================================
 async function sendIphoneCommand(env, cmd) {
   if (!IPHONE_CMDS.includes(cmd)) return '命令必须是：回来 / 睡觉 / 呼叫 / 测试';
-  const SMTP_HOST = env.SMTP_HOST || 'smtp.163.com';
-  const SMTP_PORT = env.SMTP_PORT ? parseInt(env.SMTP_PORT) : 465;
-  const USER = env.SMTP_USER || '';
-  const AUTH = env.SMTP_AUTH_CODE || '';
-  const TO = env.SMTP_RECIPIENT || USER;
-  if (!USER || !AUTH) return 'SMTP未配置：请在Worker环境变量设置 SMTP_USER 和 SMTP_AUTH_CODE';
+  const RESEND_KEY = env.RESEND_API_KEY || '';
+  const FROM = env.MAIL_FROM || '命令@zhizhilove.cn';
+  const TO = env.MAIL_TO || env.SMTP_RECIPIENT || '';
+  if (!RESEND_KEY) return 'Resend未配置：请在Worker环境变量设置 RESEND_API_KEY';
+  if (!TO) return '未配置收件邮箱：请设置 MAIL_TO';
   try {
-    const transporter = nodemailer.createTransport({ host: SMTP_HOST, port: SMTP_PORT, secure: SMTP_PORT === 465, auth: { user: USER, pass: AUTH } });
-    await transporter.sendMail({ from: USER, to: TO, subject: cmd, text: '' });
+    const res = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + RESEND_KEY },
+      body: JSON.stringify({ from: FROM, to: [TO], subject: cmd, text: '' })
+    });
+    if (!res.ok) return 'Resend发送失败：HTTP ' + res.status + ' ' + (await res.text());
     return `邮件已发送：主题=${cmd}，iPhone应已触发快捷指令`;
   } catch (e) {
     return '发送失败：' + (e && e.message ? e.message : String(e));
@@ -373,7 +375,7 @@ async function handleMCPRequest(request, env, corsHeaders) {
     const params = item.params;
     switch (method) {
       case 'initialize':
-        return { jsonrpc: '2.0', id, result: { protocolVersion: '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'zhizhi', version: '2.3.2' } } };
+        return { jsonrpc: '2.0', id, result: { protocolVersion: '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'zhizhi', version: '2.3.3' } } };
       case 'tools/list':
         return { jsonrpc: '2.0', id, result: { tools: [
           { name: 'zhizhi_status', description: '获取枝枝的最新状态、历史记录和推送日志', inputSchema: { type: 'object', properties: {}, additionalProperties: false } },
