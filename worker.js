@@ -88,7 +88,7 @@ async function sendIphoneCommand(env, cmd) {
     const res = await fetch('https://api.resend.com/emails', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + RESEND_KEY },
-      body: JSON.stringify({ from: FROM, to: [TO], subject: cmd, text: '' })
+      body: JSON.stringify({ from: FROM, to: [TO], subject: cmd, text: cmd })
     });
     if (!res.ok) return 'Resend发送失败：HTTP ' + res.status + ' ' + (await res.text());
     return `邮件已发送：主题=${cmd}，iPhone应已触发快捷指令`;
