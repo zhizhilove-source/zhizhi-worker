@@ -1,6 +1,6 @@
 // ============================================================
 // 沉浸式男友 Worker（记忆、决策、闹钟、时长、成就、远程切屏、自动锁屏）
-// 版本 2.2.0
+// 版本 2.3.0
 // ============================================================
 import nodemailer from 'nodemailer';
 
@@ -122,19 +122,29 @@ async function appendToKV(env, key, record, maxAgeMs, maxLen) {
   await env.DATA.put(key, JSON.stringify(arr));
   return arr;
 }
-function computeTodayUsage(appUsage, nowTs, todayStartTs) {
-  const todayEvents = appUsage.filter(r => r.ts >= todayStartTs);
+// 通用时长统计：跨天截断(dayStart) + 残留open封顶(dayEnd) + 单session上限防虚高
+function computeDayUsage(appUsage, nowTs, dayStart, dayEnd) {
   const sessions = {};
   const openMap = {};
-  for (const r of todayEvents) {
+  const endTs = Math.min(nowTs, dayEnd);
+  const MAX_SESSION = 6 * 60 * 60 * 1000; // 单次open超过6小时无close视为异常残留
+  for (const r of appUsage) {
+    if (r.ts > endTs) continue;
     if (r.event === 'open') openMap[r.app] = r.ts;
-    else if (r.event === 'close' && openMap[r.app]) {
-      sessions[r.app] = (sessions[r.app] || 0) + (r.ts - openMap[r.app]) / 1000;
-      delete openMap[r.app];
+    else if (r.event === 'close' && openMap[r.app] != null) {
+      const start = Math.max(openMap[r.app], dayStart);
+      if (start < r.ts && r.ts - start <= MAX_SESSION) sessions[r.app] = (sessions[r.app] || 0) + (r.ts - start) / 1000;
+      openMap[r.app] = null;
     }
   }
-  for (const [app, ts] of Object.entries(openMap)) sessions[app] = (sessions[app] || 0) + (nowTs - ts) / 1000;
+  for (const [app, ts] of Object.entries(openMap)) {
+    const start = Math.max(ts, dayStart);
+    if (start < endTs && endTs - start <= MAX_SESSION) sessions[app] = (sessions[app] || 0) + (endTs - start) / 1000;
+  }
   return sessions;
+}
+function computeTodayUsage(appUsage, nowTs, todayStartTs) {
+  return computeDayUsage(appUsage, nowTs, todayStartTs, todayStartTs + 24 * 60 * 60 * 1000);
 }
 function currentAppDuration(appUsage, app, nowTs) {
   for (let i = appUsage.length - 1; i >= 0; i--) {
@@ -227,6 +237,16 @@ async function handleAutoLock(env, deviceId, appName, event, appUsage) {
 
   // 深夜时段才管束
   if (!inLockWindow(bjNow)) return;
+
+  // ===== 呼叫自动触发（凌晨玩手机，和睡觉同款逻辑，每天限1次）=====
+  if (isStrongEntertainment(appName)) {
+    const callKey = dailyKey('auto_call', deviceId);
+    const called = await env.DATA.get(callKey);
+    if (!called) {
+      await sendIphoneCommand(env, '呼叫');
+      await env.DATA.put(callKey, 'true');
+    }
+  }
 
   // ===== 情景：从 Kelivo 切回强娱乐 App → 判断是否真回来 / 敷衍 =====
   if (event === 'open' && isStrongEntertainment(appName) && prevApp && prevApp.includes('Kelivo')) {
@@ -339,12 +359,12 @@ async function handleMCPRequest(request, env, corsHeaders) {
     const params = item.params;
     switch (method) {
       case 'initialize':
-        return { jsonrpc: '2.0', id, result: { protocolVersion: '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'zhizhi', version: '2.2.0' } } };
+        return { jsonrpc: '2.0', id, result: { protocolVersion: '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'zhizhi', version: '2.3.0' } } };
       case 'tools/list':
         return { jsonrpc: '2.0', id, result: { tools: [
           { name: 'zhizhi_status', description: '获取枝枝的最新状态、历史记录和推送日志', inputSchema: { type: 'object', properties: {}, additionalProperties: false } },
           { name: 'add_reminder', description: '给枝枝定一个闹钟提醒，到点通过Bark推送。参数time为"HH:MM"24小时制，text为提醒内容。', inputSchema: { type: 'object', properties: { time: { type: 'string', description: '闹钟时间，HH:MM 24小时制，如 09:00' }, text: { type: 'string', description: '提醒内容，如 起床啦' } }, required: ['time', 'text'] } },
-          { name: 'app_usage', description: '查询枝枝今天各App的使用时长（基于open/close事件流，精确到秒）', inputSchema: { type: 'object', properties: {}, additionalProperties: false } },
+          { name: 'app_usage', description: '查询枝枝App的使用时长（支持近7天）。参数days:1~7，不传默认今天。', inputSchema: { type: 'object', properties: { days: { type: 'number', description: '查询最近几天，1~7，默认1' } }, additionalProperties: false } },
           { name: 'send_iphone_cmd', description: '远程遥控枝枝的iPhone：cmd为"回来"时手机切回Kelivo，"睡觉"时锁屏，"呼叫"时弹通知/响铃，"测试"只发邮件验证链路', inputSchema: { type: 'object', properties: { cmd: { type: 'string', enum: ['回来', '睡觉', '呼叫', '测试'] } }, required: ['cmd'] } }
         ] } };
       case 'tools/call': {
@@ -369,19 +389,23 @@ async function handleMCPRequest(request, env, corsHeaders) {
           await fetch('https://api.day.app/Fn73bpSuSpBrCz3iJnCmXF/' + encodeURIComponent(replyMsg) + '?sound=bell');
           return { jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: JSON.stringify({ success: true, time, text }) }] } };
         } else if (toolName === 'app_usage') {
-          const nowTs = Date.now();
           const bjNow = getBeijingTime();
-          const todayStartTs = new Date(Date.UTC(bjNow.getUTCFullYear(), bjNow.getUTCMonth(), bjNow.getUTCDate())).getTime();
+          const nowTs = Date.now();
+          const days = Math.max(1, Math.min(7, parseInt(args.days) || 1));
           let appUsage = [];
           const usageRaw = await env.DATA.get('app_usage_history');
           if (usageRaw) { try { appUsage = JSON.parse(usageRaw); } catch {} }
-          const usage = computeTodayUsage(appUsage, nowTs, todayStartTs);
           const lines = [];
-          for (const [app, secs] of Object.entries(usage).sort((a, b) => b[1] - a[1])) {
-            const m = Math.floor(secs / 60), s = Math.floor(secs % 60);
-            lines.push(`${app}: ${m}分${s}秒`);
+          for (let d = days - 1; d >= 0; d--) {
+            const dayStart = new Date(Date.UTC(bjNow.getUTCFullYear(), bjNow.getUTCMonth(), bjNow.getUTCDate() - d)).getTime();
+            const dayEnd = dayStart + 24 * 60 * 60 * 1000;
+            const usage = computeDayUsage(appUsage, nowTs, dayStart, dayEnd);
+            const label = `${bjNow.getUTCMonth() + 1}-${bjNow.getUTCDate() - d}`;
+            const parts = Object.entries(usage).sort((a, b) => b[1] - a[1])
+              .map(([a, s]) => `${a}:${Math.floor(s / 60)}分${Math.floor(s % 60)}秒`);
+            if (parts.length) lines.push(`【${label}】` + parts.join(' '));
           }
-          return { jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: lines.length ? lines.join('\n') : '今天暂无使用时长记录' }] } };
+          return { jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: lines.length ? lines.join('\n') : '近' + days + '天暂无记录' }] } };
         } else if (toolName === 'send_iphone_cmd') {
           const cmd = args.cmd;
           if (!IPHONE_CMDS.includes(cmd)) return { jsonrpc: '2.0', id, error: { code: -32602, message: '命令必须是：回来 / 睡觉 / 呼叫 / 测试' } };
