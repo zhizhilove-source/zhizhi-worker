@@ -1,6 +1,6 @@
 // ============================================================
 // 沉浸式男友 Worker（记忆、决策、闹钟、时长、成就、远程切屏、自动锁屏）
-// 版本 2.3.3
+// 版本 2.3.4
 // ============================================================
 
 export default {
@@ -375,7 +375,7 @@ async function handleMCPRequest(request, env, corsHeaders) {
     const params = item.params;
     switch (method) {
       case 'initialize':
-        return { jsonrpc: '2.0', id, result: { protocolVersion: '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'zhizhi', version: '2.3.3' } } };
+        return { jsonrpc: '2.0', id, result: { protocolVersion: '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'zhizhi', version: '2.3.4' } } };
       case 'tools/list':
         return { jsonrpc: '2.0', id, result: { tools: [
           { name: 'zhizhi_status', description: '获取枝枝的最新状态、历史记录和推送日志', inputSchema: { type: 'object', properties: {}, additionalProperties: false } },
@@ -450,7 +450,7 @@ async function handleMCPRequest(request, env, corsHeaders) {
 }
 
 // ============================================================
-// /event 接口（App open/close + 自动锁屏）
+// /event 接口（App open/close + KV自动补close + 自动锁屏）
 // ============================================================
 async function handleEventRequest(request, env, corsHeaders) {
   let body;
@@ -466,9 +466,24 @@ async function handleEventRequest(request, env, corsHeaders) {
     return new Response(JSON.stringify({ error: '参数需包含 app_name 和 event(open/close)' }), { status: 400, headers: { 'Content-Type': 'application/json', ...corsHeaders } });
   }
   const deviceId = device_id || 'default';
+  const nowTs = Date.now();
+  const lastAppKey = `last_app_${deviceId}`;
 
-  // 写入事件流
-  await appendToKV(env, 'app_usage_history', { app: app_name, event, ts: Date.now() }, 7 * 24 * 60 * 60 * 1000, 5000);
+  // ===== KV 自动补 close（枝枝 2026-08-09 方案，根治凌晨残留 open 虚高）=====
+  // 收到 open：若 KV 存的上一个 app 非空且不同，先自动补一条它的 close，再存当前 app
+  // 收到 close（锁屏主动上报）：清掉 lastApp，避免下次补一条多余的 close
+  if (event === 'open') {
+    const lastApp = await env.DATA.get(lastAppKey);
+    if (lastApp && lastApp !== app_name) {
+      await appendToKV(env, 'app_usage_history', { app: lastApp, event: 'close', ts: nowTs }, 7 * 24 * 60 * 60 * 1000, 5000);
+    }
+    await env.DATA.put(lastAppKey, app_name);
+  } else if (event === 'close') {
+    await env.DATA.delete(lastAppKey);
+  }
+
+  // 写入当前事件
+  await appendToKV(env, 'app_usage_history', { app: app_name, event, ts: nowTs }, 7 * 24 * 60 * 60 * 1000, 5000);
 
   // 读取事件流 + 触发自动锁屏
   let appUsage = [];
