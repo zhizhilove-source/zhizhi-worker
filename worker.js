@@ -1,6 +1,6 @@
 // ============================================================
 // 沉浸式男友 Worker（记忆、决策、闹钟、时长、成就、远程切屏、自动锁屏）
-// 版本 2.3.4
+// 版本 2.3.5
 // ============================================================
 
 export default {
@@ -282,7 +282,7 @@ async function handleAutoLock(env, deviceId, appName, event, appUsage) {
     return;
   }
 
-  // ===== 情景：进入 Kelivo → 记录进入时间 =====
+  // ===== 情景：进入 Kelivo → 记录进入时间（保留，与 handleEventRequest 双重覆盖） =====
   if (event === 'open' && appName.includes('Kelivo')) {
     await env.DATA.put(`kelivo_enter_${deviceId}`, String(nowTs));
   }
@@ -375,7 +375,7 @@ async function handleMCPRequest(request, env, corsHeaders) {
     const params = item.params;
     switch (method) {
       case 'initialize':
-        return { jsonrpc: '2.0', id, result: { protocolVersion: '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'zhizhi', version: '2.3.4' } } };
+        return { jsonrpc: '2.0', id, result: { protocolVersion: '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'zhizhi', version: '2.3.5' } } };
       case 'tools/list':
         return { jsonrpc: '2.0', id, result: { tools: [
           { name: 'zhizhi_status', description: '获取枝枝的最新状态、历史记录和推送日志', inputSchema: { type: 'object', properties: {}, additionalProperties: false } },
@@ -395,7 +395,10 @@ async function handleMCPRequest(request, env, corsHeaders) {
           let pushLogs = [];
           const logsRaw = await env.DATA.get('push_history');
           if (logsRaw) { try { pushLogs = JSON.parse(logsRaw); } catch {} }
-          const data = { latest: latestRaw ? JSON.parse(latestRaw) : null, last_push: lastPushRaw ? JSON.parse(lastPushRaw) : null, history: history.slice(-12), push_logs: pushLogs.slice(-10) };
+          // 读取离开时长：kelivo_enter 记录最近一次进入 Kelivo 的时间戳
+          const kelivoEnterRaw = await env.DATA.get('kelivo_enter_default');
+          const awayInfo = kelivoEnterRaw ? { kelivo_enter_ts: parseInt(kelivoEnterRaw), away_sec: Math.floor((Date.now() - parseInt(kelivoEnterRaw)) / 1000) } : null;
+          const data = { latest: latestRaw ? JSON.parse(latestRaw) : null, last_push: lastPushRaw ? JSON.parse(lastPushRaw) : null, history: history.slice(-12), push_logs: pushLogs.slice(-10), away: awayInfo };
           return { jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: JSON.stringify(data) }] } };
         } else if (toolName === 'add_reminder') {
           const { time, text } = args;
@@ -450,7 +453,7 @@ async function handleMCPRequest(request, env, corsHeaders) {
 }
 
 // ============================================================
-// /event 接口（App open/close + KV自动补close + 自动锁屏）
+// /event 接口（App open/close + KV自动补close + 全域离开计时 + 自动锁屏）
 // ============================================================
 async function handleEventRequest(request, env, corsHeaders) {
   let body;
@@ -484,6 +487,11 @@ async function handleEventRequest(request, env, corsHeaders) {
 
   // 写入当前事件
   await appendToKV(env, 'app_usage_history', { app: app_name, event, ts: nowTs }, 7 * 24 * 60 * 60 * 1000, 5000);
+
+  // ===== 全域离开计时：每次进入 Kelivo 记录时间戳，不受深夜锁屏窗口限制 =====
+  if (event === 'open' && app_name.includes('Kelivo')) {
+    await env.DATA.put(`kelivo_enter_${deviceId}`, String(nowTs));
+  }
 
   // 读取事件流 + 触发自动锁屏
   let appUsage = [];
